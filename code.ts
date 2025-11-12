@@ -15,7 +15,15 @@ figma.ui.onmessage = (msg) => {
         // Move out of the frame
         const x = msg.x;
         const y = msg.y;
-        figma.currentPage.appendChild(svgNode);
+
+        // Append to the correct parent (frame or page)
+        const parentNode = msg.parentId ? figma.getNodeById(msg.parentId) as (BaseNode & ChildrenMixin) : null;
+        if (parentNode && 'appendChild' in parentNode) {
+          parentNode.appendChild(svgNode);
+        } else {
+          figma.currentPage.appendChild(svgNode);
+        }
+
         svgNode.x = x;
         svgNode.y = y;
         node.remove();
@@ -23,7 +31,14 @@ figma.ui.onmessage = (msg) => {
         svgNode = node;
         svgNode.x = msg.x;
         svgNode.y = msg.y;
-        figma.currentPage.appendChild(svgNode);
+
+        // Append to the correct parent (frame or page)
+        const parentNode = msg.parentId ? figma.getNodeById(msg.parentId) as (BaseNode & ChildrenMixin) : null;
+        if (parentNode && 'appendChild' in parentNode) {
+          parentNode.appendChild(svgNode);
+        } else {
+          figma.currentPage.appendChild(svgNode);
+        }
       }
 
       svgNode.name = "LaTeX: " + msg.latex.substring(0, 40);
@@ -212,7 +227,8 @@ async function processTextNodes() {
         latex: block.latex,
         x: node.x,
         y: offsetY,
-        display: block.display
+        display: block.display,
+        parentId: node.parent ? node.parent.id : null
       });
       // Display math needs more space
       offsetY += block.display ? 80 : 40;
