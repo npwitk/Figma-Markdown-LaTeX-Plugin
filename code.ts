@@ -71,6 +71,9 @@ async function processTextNodes() {
     const displayLatexRegex = /\$\$([\s\S]+?)\$\$/g;
     const inlineLatexRegex = /\$([^\$\n]+?)\$/g;
     const boldRegex = /\*\*(.*?)\*\*/g;
+    const italicRegex = /\*([^\*\n]+?)\*/g;
+    const h1Regex = /^# (.+)$/gm;
+    const h2Regex = /^## (.+)$/gm;
 
     const latexBlocks: { latex: string; x: number; y: number; display: boolean }[] = [];
 
@@ -106,21 +109,73 @@ async function processTextNodes() {
     // Remove inline math blocks from text
     processedText = processedText.replace(inlineLatexRegex, '');
 
-    // Apply bold styling
+    // Detect headers and store their formatting info
+    const h1Matches: { text: string; index: number }[] = [];
+    const h2Matches: { text: string; index: number }[] = [];
+
+    let match;
+    while ((match = h1Regex.exec(processedText)) !== null) {
+      h1Matches.push({ text: match[1], index: match.index });
+    }
+    while ((match = h2Regex.exec(processedText)) !== null) {
+      h2Matches.push({ text: match[1], index: match.index });
+    }
+
+    // Remove header markers (## and #)
+    processedText = processedText.replace(h1Regex, "$1");
+    processedText = processedText.replace(h2Regex, "$1");
+
+    // Extract bold matches (before removing markers)
     await figma.loadFontAsync({ family: "Inter", style: "Bold" });
     const boldMatches: RegExpMatchArray[] = [];
-    let match;
     while ((match = boldRegex.exec(processedText)) !== null) {
       boldMatches.push(match);
     }
 
+    // Extract italic matches (before removing markers) - must be done AFTER bold to avoid conflicts
+    await figma.loadFontAsync({ family: "Inter", style: "Italic" });
+    const italicMatches: RegExpMatchArray[] = [];
+    let tempText = processedText.replace(boldRegex, "$1"); // Remove bold markers for italic matching
+    while ((match = italicRegex.exec(tempText)) !== null) {
+      italicMatches.push(match);
+    }
+
     let plainText = processedText.replace(boldRegex, "$1"); // remove ** markers
+    plainText = plainText.replace(italicRegex, "$1"); // remove * markers
 
     // Clean up extra whitespace
     plainText = plainText.replace(/\n\n\n+/g, '\n\n');
     plainText = plainText.trim();
 
     node.characters = plainText;
+
+    // Get the current font size as baseline
+    const baseFontSize = node.fontSize as number;
+
+    // Apply header font sizes
+    for (const h1 of h1Matches) {
+      const start = plainText.indexOf(h1.text);
+      if (start !== -1) {
+        const end = start + h1.text.length;
+        try {
+          node.setRangeFontSize(start, end, baseFontSize * 2); // H1: 2x size
+        } catch (e) {
+          console.log("Could not apply H1 size:", e);
+        }
+      }
+    }
+
+    for (const h2 of h2Matches) {
+      const start = plainText.indexOf(h2.text);
+      if (start !== -1) {
+        const end = start + h2.text.length;
+        try {
+          node.setRangeFontSize(start, end, baseFontSize * 1.5); // H2: 1.5x size
+        } catch (e) {
+          console.log("Could not apply H2 size:", e);
+        }
+      }
+    }
 
     // Apply bold formatting
     for (const match of boldMatches) {
@@ -131,6 +186,19 @@ async function processTextNodes() {
           node.setRangeFontName(start, end, { family: "Inter", style: "Bold" });
         } catch (e) {
           console.log("Could not apply bold:", e);
+        }
+      }
+    }
+
+    // Apply italic formatting
+    for (const match of italicMatches) {
+      const start = plainText.indexOf(match[1]);
+      if (start !== -1) {
+        const end = start + match[1].length;
+        try {
+          node.setRangeFontName(start, end, { family: "Inter", style: "Italic" });
+        } catch (e) {
+          console.log("Could not apply italic:", e);
         }
       }
     }
