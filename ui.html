@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          packages: {'[+]': ['all']}
+        },
+        svg: {
+          fontCache: 'none'
+        },
+        startup: {
+          ready: () => {
+            MathJax.startup.defaultReady();
+            window.mathJaxReady = true;
+          }
+        }
+      };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      window.onmessage = async (event) => {
+        const msg = event.data.pluginMessage;
+
+        if (msg.type === "render-latex") {
+          try {
+            // Wait for MathJax to be ready
+            while (!window.mathJaxReady) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            // Convert LaTeX to SVG using MathJax
+            // Use display mode from message (true for $$...$$ blocks, false for $...$ inline)
+            const node = await MathJax.tex2svgPromise(msg.latex, {
+              display: msg.display !== false, // Default to true if not specified
+              em: 16,
+              ex: 8,
+              containerWidth: 1000
+            });
+
+            // Extract the SVG element
+            const svg = node.querySelector('svg');
+
+            if (svg) {
+              // Get the SVG as string
+              const svgString = svg.outerHTML;
+
+              // Send SVG back to plugin
+              parent.postMessage(
+                {
+                  pluginMessage: {
+                    type: "latex-svg",
+                    svg: svgString,
+                    x: msg.x,
+                    y: msg.y,
+                    latex: msg.latex
+                  }
+                },
+                "*"
+              );
+            } else {
+              throw new Error("No SVG generated");
+            }
+          } catch (error) {
+            console.error("Error rendering LaTeX:", error);
+            parent.postMessage(
+              {
+                pluginMessage: {
+                  type: "error",
+                  error: error.toString(),
+                  latex: msg.latex
+                }
+              },
+              "*"
+            );
+          }
+        }
+      };
+    </script>
+  </body>
+</html>
