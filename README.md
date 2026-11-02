@@ -1,5 +1,7 @@
 # Markdown + LaTeX Formatter
 
+![Markdown + LaTeX Formatter: an Obsidian note on the left, the plugin's styles panel in the middle, and the formatted Figma sheet on the right](assets/thumbnail.png)
+
 A Figma plugin that turns Obsidian-style markdown pasted into a text layer into styled text, tables and rendered LaTeX equations. It uses **your own styles**, captured from layers already on your sheet.
 
 ## Commands
