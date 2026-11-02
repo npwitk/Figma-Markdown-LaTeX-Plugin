@@ -48,6 +48,8 @@ Styles are saved **inside each Figma file**. Use **Export JSON** (copy or downlo
 
 Highlight note: Figma can't paint a background behind part of a text layer, so `==text==` uses the Highlight slot's text styling (color, underline, weight…).
 
+**Frames:** if the text layer only sits *on top of* a frame (for example, text pasted onto an A4 page), Format selection first moves it into that frame without moving it on screen. The text, tables and LaTeX then all belong to the frame and export with it. Auto-layout frames are never used as the target, so nothing gets reflowed.
+
 When a note contains a table, the text layer is replaced by a vertical auto-layout frame ("Markdown") that holds the text, the table(s), then more text.
 
 Try `samples/obsidian-sample.md`.

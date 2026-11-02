@@ -932,7 +932,57 @@ function firstSegmentFont(node: TextNode): FontName {
   return segs.length ? segs[0].fontName : { family: "Inter", style: "Regular" };
 }
 
-async function formatNode(node: TextNode, settings: Settings): Promise<{ latex: number; warnings: Set<string> }> {
+type Container = FrameNode | ComponentNode | SectionNode;
+
+/** Absolute bounds of a node, ignoring rotation. */
+function absBox(n: SceneNode): Rect {
+  const t = n.absoluteTransform;
+  return { x: t[0][2], y: t[1][2], width: n.width, height: n.height };
+}
+
+function containsPoint(r: Rect, x: number, y: number): boolean {
+  return x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height;
+}
+
+/**
+ * The deepest frame (e.g. an A4 page) under the given point, searching the
+ * topmost layers first. Auto-layout frames are skipped so nothing gets reflowed.
+ */
+function frameAt(children: readonly SceneNode[], x: number, y: number, exclude: SceneNode): Container | null {
+  for (let i = children.length - 1; i >= 0; i--) {
+    const c = children[i];
+    if (c === exclude || !c.visible) continue;
+    const isContainer = c.type === "FRAME" || c.type === "COMPONENT" || c.type === "SECTION";
+    if (!isContainer) continue;
+    if (c.type !== "SECTION" && (c as FrameNode).layoutMode !== "NONE") continue;
+    if (!containsPoint(absBox(c), x, y)) continue;
+    const deeper = frameAt((c as Container).children, x, y, exclude);
+    return deeper || (c as Container);
+  }
+  return null;
+}
+
+/**
+ * If a text layer only *sits on top of* a frame (it's a direct child of the page
+ * or a section), move it into that frame, keeping its position on screen, so the
+ * text, tables and LaTeX all end up inside the frame and export with it.
+ */
+function adoptIntoFrame(node: TextNode): Container | null {
+  const parent = node.parent;
+  if (!parent || (parent.type !== "PAGE" && parent.type !== "SECTION")) return null;
+  const box = absBox(node);
+  const siblings = (parent as ChildrenMixin).children;
+  const frame = frameAt(siblings, box.x + Math.min(box.width, 40) / 2, box.y + Math.min(box.height, 40) / 2, node);
+  if (!frame || frame === parent) return null;
+  const fb = absBox(frame);
+  frame.appendChild(node);
+  node.x = box.x - fb.x;
+  node.y = box.y - fb.y;
+  return frame;
+}
+
+async function formatNode(node: TextNode, settings: Settings): Promise<{ latex: number; warnings: Set<string>; movedInto: string | null }> {
+  const adopted = adoptIntoFrame(node);
   const parsed = parseMarkdown(node.characters);
   const ctx: Ctx = {
     slots: effectiveSlots(settings),
@@ -1007,7 +1057,7 @@ async function formatNode(node: TextNode, settings: Settings): Promise<{ latex: 
     });
     offsetY += block.display ? 80 : 40;
   }
-  return { latex: parsed.latex.length, warnings: ctx.warnings };
+  return { latex: parsed.latex.length, warnings: ctx.warnings, movedInto: adopted ? adopted.name : null };
 }
 
 async function formatSelection() {
@@ -1020,16 +1070,19 @@ async function formatSelection() {
   const settings = loadSaved();
   const warnings = new Set<string>();
   let latex = 0;
+  const movedInto = new Set<string>();
   for (const node of textNodes) {
     try {
       const r = await formatNode(node, settings);
       latex += r.latex;
       r.warnings.forEach((w) => warnings.add(w));
+      if (r.movedInto) movedInto.add(r.movedInto);
     } catch (e) {
       console.error(e);
       figma.notify("❌ Error formatting: " + (e instanceof Error ? e.message : String(e)), { error: true });
     }
   }
+  if (movedInto.size) figma.notify(`📄 Moved text into frame "${[...movedInto].join('", "')}"`);
   if (warnings.size) figma.notify("⚠️ " + [...warnings].slice(0, 3).join(" · "), { timeout: 6000 });
   if (latex === 0) figma.notify("✅ Markdown formatting applied");
   else figma.notify(`⏳ Rendering ${latex} LaTeX block${latex > 1 ? "s" : ""}…`);
