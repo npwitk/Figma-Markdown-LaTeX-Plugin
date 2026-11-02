@@ -8,5 +8,9 @@
   "networkAccess": {
     "allowedDomains": ["https://cdn.jsdelivr.net"]
   },
-  "documentAccess": "dynamic-page"
+  "documentAccess": "dynamic-page",
+  "menu": [
+    { "name": "Format selection", "command": "format" },
+    { "name": "Styles & settings…", "command": "settings" }
+  ]
 }

@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
+    <meta charset="utf-8" />
     <script>
       MathJax = {
         tex: {
@@ -21,18 +22,386 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
     <style>
+      :root {
+        --bg: var(--figma-color-bg, #fff);
+        --bg2: var(--figma-color-bg-secondary, #f5f5f5);
+        --hover: var(--figma-color-bg-hover, #f0f0f0);
+        --text: var(--figma-color-text, #1e1e1e);
+        --text2: var(--figma-color-text-secondary, #757575);
+        --border: var(--figma-color-border, #e6e6e6);
+        --brand: var(--figma-color-bg-brand, #0d99ff);
+        --onbrand: var(--figma-color-text-onbrand, #fff);
+        --danger: var(--figma-color-text-danger, #e03e1a);
+      }
+      * { box-sizing: border-box; }
       body {
         margin: 0;
-        padding: 0;
+        font: 11px/1.4 Inter, system-ui, -apple-system, sans-serif;
+        color: var(--text);
+        background: var(--bg);
       }
+      #app { display: none; }
+      body.settings #app { display: block; }
+      header {
+        position: sticky; top: 0; z-index: 2;
+        background: var(--bg);
+        border-bottom: 1px solid var(--border);
+        padding: 10px 12px;
+      }
+      .sel {
+        margin-top: 8px; padding: 6px 8px; border-radius: 6px;
+        background: var(--bg2); color: var(--text2); min-height: 30px;
+      }
+      .sel b { color: var(--text); font-weight: 600; }
+      main { padding: 4px 12px 16px; }
+      h3 {
+        font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+        color: var(--text2); margin: 14px 0 6px;
+      }
+      .slot { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 6px; }
+      .slot-top { display: flex; align-items: baseline; gap: 6px; }
+      .slot-name { font-weight: 600; }
+      .md { color: var(--text2); font-family: ui-monospace, Menlo, monospace; }
+      .tag { margin-left: auto; font-size: 10px; color: var(--text2); }
+      .tag.custom { color: var(--brand); }
+      .preview { margin: 4px 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; }
+      .summary { color: var(--text2); font-size: 10px; }
+      .actions { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+      button {
+        font: inherit; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+        border-radius: 5px; padding: 3px 8px; cursor: pointer;
+      }
+      button:hover { background: var(--hover); }
+      button.primary { background: var(--brand); color: var(--onbrand); border-color: transparent; font-weight: 600; padding: 6px 10px; width: 100%; }
+      button.primary:hover { filter: brightness(1.05); }
+      button.danger { color: var(--danger); }
+      .edit { display: none; margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
+      .slot.editing .edit { display: block; }
+      .grid { display: grid; grid-template-columns: 64px 1fr; gap: 4px 6px; align-items: center; }
+      label { color: var(--text2); }
+      input, select, textarea {
+        font: inherit; color: var(--text); background: var(--bg);
+        border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; width: 100%; min-width: 0;
+      }
+      .color { display: flex; gap: 4px; }
+      .color input[type=color] { width: 28px; padding: 0; height: 22px; flex: none; }
+      .hint { color: var(--text2); font-size: 10px; margin: 4px 0 0; }
+      textarea { height: 90px; font-family: ui-monospace, Menlo, monospace; font-size: 10px; resize: vertical; }
+      .row { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
     </style>
   </head>
   <body>
+    <div id="app">
+      <header>
+        <button class="primary" id="format">Format selected text</button>
+        <div class="sel" id="sel">Select a text layer on the canvas to capture its style.</div>
+      </header>
+      <main>
+        <h3>Blocks</h3>
+        <div id="blocks"></div>
+        <h3>Inline</h3>
+        <div id="inline"></div>
+        <p class="hint">Bold / Italic: <i>Capture</i> takes just the weight of the selected text and keeps the surrounding font. Figma can't paint a background behind part of a text layer, so <b>==highlight==</b> uses a text style (color, underline, weight…).</p>
+        <h3>Table</h3>
+        <div id="tableSlots"></div>
+        <div class="slot">
+          <div class="grid">
+            <label>Padding X</label><input type="number" id="padX" min="0" />
+            <label>Padding Y</label><input type="number" id="padY" min="0" />
+            <label>Dividers</label>
+            <div class="color"><input type="color" id="divColorPick" /><input id="divColor" placeholder="C4C4C4" /></div>
+          </div>
+        </div>
+        <h3>Share between files</h3>
+        <p class="hint">Styles are saved inside this Figma file. Export them as JSON and import into another file.</p>
+        <div class="row">
+          <button id="export">Export JSON</button>
+          <button id="copy">Copy</button>
+          <button id="download">Download .json</button>
+          <button id="importFileBtn">Import file…</button>
+          <input type="file" id="importFile" accept=".json,application/json" style="display:none" />
+        </div>
+        <textarea id="json" placeholder="Exported JSON appears here. Paste JSON and press Import to load it."></textarea>
+        <div class="row">
+          <button id="import">Import pasted JSON</button>
+          <button id="resetAll" class="danger">Reset all to defaults</button>
+        </div>
+      </main>
+      <datalist id="families"></datalist>
+    </div>
+
     <script>
+      const SLOTS = {
+        blocks: [
+          ["title", "Title", "frontmatter title:"],
+          ["h1", "H1", "#"], ["h2", "H2", "##"], ["h3", "H3", "###"], ["h4", "H4", "####"],
+          ["body", "Body", "text"],
+        ],
+        inline: [
+          ["bold", "Bold", "**text**"], ["italic", "Italic", "*text*"], ["boldItalic", "Bold italic", "***text***"],
+          ["code", "Code", "`text`"], ["highlight", "Highlight", "==text=="],
+        ],
+        tableSlots: [["tableHeader", "Header", "| a |"], ["tableCell", "Cell", "| b |"]],
+      };
+      const WEIGHT_ONLY = ["bold", "italic", "boldItalic"];
+      let state = { saved: {}, defaults: {}, table: {} };
+      let selection = null;
+      const stylesCache = {};
+
+      const post = (msg) => parent.postMessage({ pluginMessage: msg }, "*");
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+      // ---------- helpers ----------
+      const toHex = (c) => [c.r, c.g, c.b].map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("").toUpperCase();
+      const fromHex = (h) => {
+        const s = h.replace("#", "").trim();
+        if (!/^[0-9a-fA-F]{6}$/.test(s)) return null;
+        return { r: parseInt(s.slice(0, 2), 16) / 255, g: parseInt(s.slice(2, 4), 16) / 255, b: parseInt(s.slice(4, 6), 16) / 255 };
+      };
+      const fillHex = (spec) => {
+        const f = spec && spec.fills && spec.fills.find((p) => p.type === "SOLID");
+        return f ? toHex(f.color) : "";
+      };
+      function cssWeight(style) {
+        const s = (style || "").toLowerCase().replace(/[\s_-]/g, "");
+        if (/(extra|ultra)black/.test(s)) return 950;
+        if (/black|heavy/.test(s)) return 900;
+        if (/(extra|ultra)bold/.test(s)) return 800;
+        if (/(semi|demi)bold|demi/.test(s)) return 600;
+        if (/bold/.test(s)) return 700;
+        if (/medium/.test(s)) return 500;
+        if (/(extra|ultra)light/.test(s)) return 200;
+        if (/light/.test(s)) return 300;
+        if (/thin|hairline/.test(s)) return 100;
+        return 400;
+      }
+      const specOf = (key) => state.saved[key] || state.defaults[key] || null;
+
+      function describe(spec) {
+        if (!spec) return "Not set — uses the layer's own style";
+        const parts = [];
+        if (spec.textStyleName) parts.push("◇ " + spec.textStyleName);
+        if (spec.fontName) parts.push(spec.fontName.family + " " + spec.fontName.style);
+        else if (spec.fontStyle) parts.push("same font · " + spec.fontStyle);
+        if (spec.fontSize) parts.push(Math.round(spec.fontSize * 100) / 100 + "px");
+        const hx = fillHex(spec);
+        if (hx) parts.push("#" + hx);
+        if (spec.textDecoration && spec.textDecoration !== "NONE") parts.push(spec.textDecoration.toLowerCase());
+        if (spec.textCase && spec.textCase !== "ORIGINAL") parts.push(spec.textCase.toLowerCase().replace("_", " "));
+        if (spec.letterSpacing && spec.letterSpacing.value) parts.push("tracking " + spec.letterSpacing.value + (spec.letterSpacing.unit === "PERCENT" ? "%" : "px"));
+        return parts.join(" · ") || "No changes";
+      }
+
+      function previewStyle(spec) {
+        if (!spec) return "";
+        const st = [];
+        if (spec.fontName) st.push(`font-family:"${spec.fontName.family}",Inter,sans-serif`);
+        const style = spec.fontName ? spec.fontName.style : spec.fontStyle;
+        if (style) {
+          st.push("font-weight:" + cssWeight(style));
+          if (/italic|oblique/i.test(style)) st.push("font-style:italic");
+        }
+        if (spec.fontSize) st.push("font-size:" + Math.min(Math.max(spec.fontSize, 11), 22) + "px");
+        const hx = fillHex(spec);
+        if (hx) st.push("color:#" + hx);
+        if (spec.textDecoration === "UNDERLINE") st.push("text-decoration:underline");
+        if (spec.textDecoration === "STRIKETHROUGH") st.push("text-decoration:line-through");
+        if (spec.textCase === "UPPER") st.push("text-transform:uppercase");
+        if (spec.textCase === "LOWER") st.push("text-transform:lowercase");
+        if (spec.letterSpacing && spec.letterSpacing.unit === "PERCENT") st.push("letter-spacing:" + spec.letterSpacing.value / 100 + "em");
+        if (spec.letterSpacing && spec.letterSpacing.unit === "PIXELS") st.push("letter-spacing:" + spec.letterSpacing.value + "px");
+        return st.join(";");
+      }
+
+      // ---------- rendering ----------
+      function renderSlots() {
+        for (const group of Object.keys(SLOTS)) {
+          const el = $(group);
+          el.innerHTML = "";
+          for (const [key, label, md] of SLOTS[group]) el.appendChild(renderSlot(key, label, md));
+        }
+        $("padX").value = state.table.cellPaddingX;
+        $("padY").value = state.table.cellPaddingY;
+        $("divColor").value = state.table.dividerColor;
+        $("divColorPick").value = "#" + (state.table.dividerColor || "C4C4C4");
+      }
+
+      function renderSlot(key, label, md) {
+        const spec = specOf(key);
+        const custom = !!state.saved[key];
+        const div = document.createElement("div");
+        div.className = "slot";
+        div.innerHTML = `
+          <div class="slot-top">
+            <span class="slot-name">${esc(label)}</span><span class="md">${esc(md)}</span>
+            <span class="tag ${custom ? "custom" : ""}">${custom ? "custom" : state.defaults[key] ? "default" : ""}</span>
+          </div>
+          <div class="preview" style='${previewStyle(spec)}'>${esc(label)} — The quick brown fox</div>
+          <div class="summary">${esc(describe(spec))}</div>
+          <div class="actions">
+            <button data-act="capture" title="Copy the style of the selected text layer">Capture</button>
+            <button data-act="apply" title="Apply this style to the selected layer / text">Apply</button>
+            <button data-act="edit">Edit</button>
+            ${custom ? '<button data-act="reset" class="danger">Reset</button>' : ""}
+          </div>
+          <div class="edit">
+            <div class="grid">
+              <label>Family</label><input data-f="family" list="families" placeholder="same as surrounding text" />
+              <label>Style</label><input data-f="style" list="styles-${key}" placeholder="e.g. Semibold" />
+              <label>Size</label><input data-f="size" type="number" step="0.01" placeholder="keep" />
+              <label>Color</label><div class="color"><input type="color" data-f="colorPick" /><input data-f="color" placeholder="keep (hex)" /></div>
+              <label>Decoration</label>
+              <select data-f="decoration"><option value="">keep</option><option value="NONE">none</option><option value="UNDERLINE">underline</option><option value="STRIKETHROUGH">strikethrough</option></select>
+              <label>Case</label>
+              <select data-f="textCase"><option value="">keep</option><option value="ORIGINAL">original</option><option value="UPPER">UPPER</option><option value="LOWER">lower</option><option value="TITLE">Title</option></select>
+            </div>
+            <datalist id="styles-${key}"></datalist>
+            <p class="hint">Leave Family empty to keep the surrounding font (e.g. Bold = "Semibold" of whatever font the text uses).</p>
+            <div class="actions"><button data-act="save">Save</button><button data-act="cancel">Cancel</button></div>
+          </div>`;
+
+        const f = (name) => div.querySelector(`[data-f="${name}"]`);
+        const fillStyles = (family) => {
+          const list = div.querySelector(`#styles-${key}`);
+          const fam = family || (selection && selection.fontName && selection.fontName.family) || "";
+          const show = (styles) => { list.innerHTML = styles.map((s) => `<option value="${esc(s)}">`).join(""); };
+          if (!fam) return show(["Regular", "Medium", "Semibold", "Bold", "Italic", "Bold Italic"]);
+          if (stylesCache[fam]) return show(stylesCache[fam]);
+          stylesCache[fam] = null;
+          pendingStyleLists.push({ fam, show });
+          post({ type: "get-font-styles", family: fam });
+        };
+
+        div.addEventListener("click", (e) => {
+          const act = e.target.dataset && e.target.dataset.act;
+          if (!act) return;
+          if (act === "capture") post({ type: "capture", slot: key, weightOnly: WEIGHT_ONLY.includes(key) });
+          if (act === "apply") post({ type: "apply-slot", slot: key });
+          if (act === "reset") post({ type: "set-slot", slot: key, spec: null });
+          if (act === "cancel") div.classList.remove("editing");
+          if (act === "edit") {
+            const s = specOf(key) || {};
+            f("family").value = s.fontName ? s.fontName.family : "";
+            f("style").value = s.fontName ? s.fontName.style : s.fontStyle || "";
+            f("size").value = s.fontSize || "";
+            f("color").value = fillHex(s);
+            f("colorPick").value = "#" + (fillHex(s) || "000000");
+            f("decoration").value = s.textDecoration || "";
+            f("textCase").value = s.textCase || "";
+            fillStyles(f("family").value);
+            div.classList.add("editing");
+          }
+          if (act === "save") {
+            const prev = specOf(key) || {};
+            const spec = {};
+            // keep properties the form doesn't edit
+            if (prev.lineHeight) spec.lineHeight = prev.lineHeight;
+            if (prev.letterSpacing) spec.letterSpacing = prev.letterSpacing;
+            const family = f("family").value.trim(), style = f("style").value.trim();
+            if (family) spec.fontName = { family, style: style || "Regular" };
+            else if (style) spec.fontStyle = style;
+            const size = parseFloat(f("size").value);
+            if (size > 0) spec.fontSize = size;
+            const rgb = fromHex(f("color").value);
+            if (rgb) spec.fills = [{ type: "SOLID", color: rgb }];
+            if (f("decoration").value) spec.textDecoration = f("decoration").value;
+            if (f("textCase").value) spec.textCase = f("textCase").value;
+            // a linked Figma text style survives only if the font wasn't changed
+            if (prev.textStyleId && prev.fontName && spec.fontName && prev.fontName.family === spec.fontName.family &&
+                prev.fontName.style === spec.fontName.style && prev.fontSize === spec.fontSize) {
+              spec.textStyleId = prev.textStyleId;
+              spec.textStyleName = prev.textStyleName;
+            }
+            post({ type: "set-slot", slot: key, spec });
+          }
+        });
+        f("family").addEventListener("change", () => fillStyles(f("family").value.trim()));
+        f("colorPick").addEventListener("input", () => { f("color").value = f("colorPick").value.slice(1).toUpperCase(); });
+        return div;
+      }
+      const pendingStyleLists = [];
+
+      function renderSelection() {
+        const el = $("sel");
+        if (!selection) {
+          el.innerHTML = "Select a text layer on the canvas to capture its style.";
+          return;
+        }
+        el.innerHTML = `<b>Selected${selection.partial ? " text" : ""}:</b> “${esc(selection.sample)}${selection.sample.length >= 30 ? "…" : ""}”<br>` +
+          `<span style='${previewStyle(Object.assign({}, selection, { fontSize: Math.min(selection.fontSize || 11, 14) }))}'>${esc(describe(selection))}</span>`;
+      }
+
+      // ---------- global controls ----------
+      $("format").onclick = () => post({ type: "format" });
+      const saveTable = () => post({
+        type: "set-table",
+        table: {
+          cellPaddingX: parseFloat($("padX").value) || 0,
+          cellPaddingY: parseFloat($("padY").value) || 0,
+          dividerColor: ($("divColor").value || "C4C4C4").replace("#", "").toUpperCase(),
+        },
+      });
+      $("padX").onchange = saveTable;
+      $("padY").onchange = saveTable;
+      $("divColor").onchange = saveTable;
+      $("divColorPick").oninput = () => { $("divColor").value = $("divColorPick").value.slice(1).toUpperCase(); };
+      $("divColorPick").onchange = saveTable;
+
+      const exportJson = () => JSON.stringify({ version: 1, slots: state.saved, table: state.table }, null, 2);
+      $("export").onclick = () => { $("json").value = exportJson(); };
+      $("copy").onclick = () => {
+        $("json").value = exportJson();
+        $("json").select();
+        document.execCommand("copy");
+      };
+      $("download").onclick = () => {
+        const a = document.createElement("a");
+        a.href = "data:application/json;charset=utf-8," + encodeURIComponent(exportJson());
+        a.download = "markdown-styles.json";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      };
+      $("import").onclick = () => post({ type: "import", json: $("json").value });
+      $("importFileBtn").onclick = () => $("importFile").click();
+      $("importFile").onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const text = await file.text();
+        $("json").value = text;
+        post({ type: "import", json: text });
+        e.target.value = "";
+      };
+      $("resetAll").onclick = () => {
+        if (confirm("Reset every style in this file to the defaults?")) post({ type: "reset-all" });
+      };
+
+      // ---------- messages from the plugin ----------
       window.onmessage = async (event) => {
         const msg = event.data.pluginMessage;
+        if (!msg) return;
 
-        if (msg.type === "render-latex") {
+        if (msg.type === "init") {
+          document.body.classList.add("settings");
+          post({ type: "get-families" });
+        } else if (msg.type === "state") {
+          state = msg;
+          renderSlots();
+        } else if (msg.type === "selection") {
+          selection = msg.spec ? Object.assign({}, msg.spec, { partial: msg.partial, sample: msg.sample }) : null;
+          renderSelection();
+        } else if (msg.type === "families") {
+          $("families").innerHTML = msg.families.map((f) => `<option value="${esc(f)}">`).join("");
+        } else if (msg.type === "font-styles") {
+          stylesCache[msg.family] = msg.styles;
+          for (let i = pendingStyleLists.length - 1; i >= 0; i--) {
+            if (pendingStyleLists[i].fam === msg.family) {
+              pendingStyleLists[i].show(msg.styles);
+              pendingStyleLists.splice(i, 1);
+            }
+          }
+        } else if (msg.type === "render-latex") {
           try {
             // Wait for MathJax to be ready
             while (!window.mathJaxReady) {
@@ -42,47 +411,26 @@
             // Convert LaTeX to SVG using MathJax
             // Use display mode from message (true for $$...$$ blocks, false for $...$ inline)
             const node = await MathJax.tex2svgPromise(msg.latex, {
-              display: msg.display !== false, // Default to true if not specified
+              display: msg.display !== false,
               em: 16,
               ex: 8,
               containerWidth: 1000
             });
 
-            // Extract the SVG element
             const svg = node.querySelector('svg');
+            if (!svg) throw new Error("No SVG generated");
 
-            if (svg) {
-              // Get the SVG as string
-              const svgString = svg.outerHTML;
-
-              // Send SVG back to plugin
-              parent.postMessage(
-                {
-                  pluginMessage: {
-                    type: "latex-svg",
-                    svg: svgString,
-                    x: msg.x,
-                    y: msg.y,
-                    latex: msg.latex
-                  }
-                },
-                "*"
-              );
-            } else {
-              throw new Error("No SVG generated");
-            }
+            post({
+              type: "latex-svg",
+              svg: svg.outerHTML,
+              x: msg.x,
+              y: msg.y,
+              parentId: msg.parentId,
+              latex: msg.latex
+            });
           } catch (error) {
             console.error("Error rendering LaTeX:", error);
-            parent.postMessage(
-              {
-                pluginMessage: {
-                  type: "error",
-                  error: error.toString(),
-                  latex: msg.latex
-                }
-              },
-              "*"
-            );
+            post({ type: "error", error: error.toString(), latex: msg.latex });
           }
         }
       };

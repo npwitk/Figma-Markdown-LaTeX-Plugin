@@ -1,112 +1,63 @@
 # Markdown + LaTeX Formatter
 
-A Figma plugin that transforms markdown and LaTeX text into beautifully formatted text with rendered mathematical equations as crisp SVG graphics.
+A Figma plugin that turns Obsidian-style markdown pasted into a text layer into styled text, tables and rendered LaTeX equations. It uses **your own styles**, captured from layers already on your sheet.
 
-## Features
+## Commands
 
-- **Markdown Support**: Converts `**bold**` text to actual bold styling
-- **Display Math Rendering**: Converts `$$...$$` blocks into beautifully rendered equations as SVG
-- **Inline Math Rendering**: Converts `$...$` into rendered math SVG objects
-- **Automatic Formatting**: Processes selected text layers with a single click
-- **Uses MathJax**: Professional-quality math rendering with full LaTeX support
+| Command | What it does |
+|---|---|
+| **Format selection** | Formats the selected text layer(s) with the styles saved in this file, then closes. |
+| **Styles & settings…** | Opens the panel where you capture, edit, apply, export and import styles. It also has a *Format selected text* button. |
 
-## How to Use
+## Style slots
 
-### 1. Install the Plugin in Figma
+Every markdown element maps to a slot:
 
-1. Open Figma Desktop App
-2. Go to **Plugins > Development > Import plugin from manifest**
-3. Select the `manifest.json` file from this directory
-4. The plugin will appear in your plugins menu
+| Slot | Markdown |
+|---|---|
+| Title | `title:` in the YAML frontmatter |
+| H1 – H4 | `#` … `####` (`#####`+ use H4) |
+| Body | normal text and list items |
+| Bold / Italic / Bold italic | `**text**`, `*text*` / `_text_`, `***text***` |
+| Code | `` `text` `` |
+| Highlight | `==text==` |
+| Table header / cell | markdown tables |
 
-### 2. Format Your Text
+### Capturing a style from your sheet
+1. Open **Styles & settings…**.
+2. On the canvas, select a layer that already looks right, for example your "H1 28". You can also highlight part of a text layer.
+3. Click **Capture** on the matching slot. This copies the font, size, color, line height, letter spacing, decoration and case. If the layer uses a Figma text style, the result stays linked to it.
 
-1. Create a text layer in Figma
-2. Type your markdown + LaTeX content. For example:
+For **Bold / Italic**, *Capture* only takes the weight (for example `Semibold`), so `**text**` inside an H2 keeps the H2 font, size and color. You can also click **Edit** and type a style; leave *Family* empty to mean "the surrounding font". If a font doesn't have the exact style, the closest weight is used and the plugin tells you. It never silently switches to Inter.
 
-```
-Consider the BVP:
+**Apply** puts a slot's style on the selected layer or text. Use it, for example, for a title line that isn't in frontmatter.
 
-$$u'' = -u, \quad 0 < t < b$$
+### Sharing styles between files
+Styles are saved **inside each Figma file**. Use **Export JSON** (copy or download) and **Import** in another file to reuse them.
 
-with boundary conditions:
+## Supported markdown
+- Headings, frontmatter title
+- `**bold**`, `*italic*`, `***both***`, `` `code` ``, `==highlight==`, `~~strike~~` (markers removed), `\*` escapes
+- Bullet, numbered and nested lists (tabs or spaces), tasks `- [ ]` → ☐ / ☑
+- Tables → auto-layout frame (header divider, column dividers, `:--:` / `--:` alignment)
+- `[[wikilink|alias]]` → alias, `[label](url)` → hyperlink, `![[embeds]]` and `%%comments%%` removed
+- Callouts `> [!note] Title` → bold title, quote markers removed
+- `$inline$` and `$$display$$` LaTeX → SVG equations placed below the text. `$10 and $20` stays as text.
 
-$$u(0) = 0, \quad u(b) = \beta$$
+Highlight note: Figma can't paint a background behind part of a text layer, so `==text==` uses the Highlight slot's text styling (color, underline, weight…).
 
-where $b$ is an integer multiple of $\pi$.
+When a note contains a table, the text layer is replaced by a vertical auto-layout frame ("Markdown") that holds the text, the table(s), then more text.
 
-**Analysis:**
-- The general solution of the ODE satisfying $u(0) = 0$ is $u(t) = c\sin(t)$ for any constant $c$
-- Because $b$ is an integer multiple of $\pi$: $c\sin(b) = 0$ for any $c$
-- **Result:**
-    - **Infinitely many solutions** if $\beta = 0$
-    - **No solution** if $\beta \neq 0$
-```
-
-3. Select the text layer
-4. Run the plugin: **Plugins > Development > Markdown + LaTeX Formatter**
-5. Watch the magic happen!
-
-### Result
-
-- Text with `**bold**` becomes actually bold
-- Display math `$$...$$` blocks are removed from text and rendered as separate SVG equation objects
-- Inline math `$...$` is removed from text and rendered as separate smaller SVG objects
-- Clean, professional mathematical notation in vector format
-
-## Syntax Reference
-
-| Syntax | Result |
-|--------|--------|
-| `**bold text**` | Bold formatted text |
-| `$$x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}$$` | Rendered display equation (large SVG) |
-| `$x^2$` | Rendered inline math (smaller SVG) |
-| `$b$ is a constant` | Creates SVG for `b`, leaves "is a constant" as text |
+Try `samples/obsidian-sample.md`.
 
 ## Development
 
-### Prerequisites
-
-- Node.js and npm installed
-- Figma Desktop App
-
-### Setup
-
 ```bash
 npm install
-npm run build
+npm run build   # or: npm run watch
+npm run lint
 ```
 
-### Development Workflow
+Import in Figma Desktop: **Plugins → Development → Import plugin from manifest…** and pick `manifest.json`.
 
-```bash
-npm run watch
-```
-
-This will automatically recompile TypeScript when you make changes.
-
-## Technical Details
-
-- Built with TypeScript
-- Uses **MathJax 3** (CDN version) for math rendering
-- Converts LaTeX to SVG for perfect vector graphics in Figma
-- Supports both display math (`$$...$$`) and inline math (`$...$`)
-- All math is rendered as separate SVG objects positioned below the original text
-
-## Troubleshooting
-
-**Plugin doesn't show up in Figma:**
-- Make sure you're using Figma Desktop App (not browser version)
-- Re-import the plugin manifest
-
-**Math not rendering:**
-- Check your LaTeX syntax
-- Make sure you're using `$$...$$` for display math
-- Check browser console for errors
-
-**Bold text not working:**
-- Ensure you have Inter font installed (or modify code.ts to use a different font)
-
-## License
-
-MIT
+Remember to run `npm run build` after editing `code.ts`. Figma runs `code.js`.
