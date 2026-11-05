@@ -41,10 +41,10 @@ Styles are saved **inside each Figma file**. Use **Export JSON** (copy or downlo
 - Headings, frontmatter title
 - `**bold**`, `*italic*`, `***both***`, `` `code` ``, `==highlight==`, `~~strike~~` (markers removed), `\*` escapes
 - Bullet, numbered and nested lists (tabs or spaces), tasks `- [ ]` → ☐ / ☑
-- Tables → auto-layout frame (header divider, column dividers, `:--:` / `--:` alignment)
+- Tables → auto-layout frame (header divider, column dividers, `:--:` / `--:` alignment). `$math$` inside a cell is rendered in that cell, sized and colored to match its text.
 - `[[wikilink|alias]]` → alias, `[label](url)` → hyperlink, `![[embeds]]` and `%%comments%%` removed
 - Callouts `> [!note] Title` → bold title, quote markers removed
-- `$inline$` and `$$display$$` LaTeX → SVG equations placed below the text. `$10 and $20` stays as text.
+- `$inline$` and `$$display$$` LaTeX in normal text → SVG equations placed below the text (Figma can't put an image inside a text layer). `$10 and $20` stays as text.
 
 Highlight note: Figma can't paint a background behind part of a text layer, so `==text==` uses the Highlight slot's text styling (color, underline, weight…).
 

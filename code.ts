@@ -235,9 +235,13 @@ interface TextChunk {
   paras: Para[];
 }
 
+/** A table cell is a row of text and inline-math pieces, so `$\theta$` stays inside its cell. */
+type CellPart = { kind: "text"; chunk: TextChunk } | { kind: "math"; latex: string };
+interface TableCell { slot: SlotKey; parts: CellPart[] }
+
 interface TableBlock {
   align: ("MIN" | "CENTER" | "MAX")[];
-  rows: TextChunk[][]; // rows[0] is the header
+  rows: TableCell[][]; // rows[0] is the header
 }
 
 type OutputBlock = { kind: "text"; chunk: TextChunk } | { kind: "table"; table: TableBlock };
@@ -284,6 +288,22 @@ function findClosing(src: string, from: number, delim: string): number {
   return -1;
 }
 
+/**
+ * If `src[i]` opens inline math, return the index of the closing `$`, else -1.
+ * Pandoc rules: no space after the opening `$`, none before the closing one,
+ * and no digit right after it, so "$10 and $20" stays text.
+ */
+function inlineMathClose(src: string, i: number): number {
+  if (src[i] !== "$" || src[i + 1] === "$" || isSpace(src[i + 1])) return -1;
+  for (let j = i + 1; j < src.length; j++) {
+    if (src[j] === "\\") { j++; continue; }
+    if (src[j] === "$") {
+      return !isSpace(src[j - 1]) && !/[0-9]/.test(src[j + 1] || "") ? j : -1;
+    }
+  }
+  return -1;
+}
+
 function parseInline(src: string, latexOut: LatexBlock[]): Inline {
   let text = "";
   const mods: Range[] = [];
@@ -322,15 +342,8 @@ function parseInline(src: string, latexOut: LatexBlock[]): Inline {
     }
 
     // $inline math$ (pandoc rules so "$10 and $20" stays text)
-    if (ch === "$" && src[i + 1] !== "$" && !isSpace(src[i + 1])) {
-      let close = -1;
-      for (let j = i + 1; j < src.length; j++) {
-        if (src[j] === "\\") { j++; continue; }
-        if (src[j] === "$") {
-          if (!isSpace(src[j - 1]) && !/[0-9]/.test(src[j + 1] || "")) close = j;
-          break;
-        }
-      }
+    if (ch === "$") {
+      const close = inlineMathClose(src, i);
       if (close !== -1) {
         latexOut.push({ latex: src.slice(i + 1, close).trim(), display: false });
         i = close + 1;
@@ -456,10 +469,39 @@ function pushLine(chunk: TextChunk, inline: Inline, slot: SlotKey, list: Para["l
   chunk.paras.push({ start, end, list, indent });
 }
 
-function cellChunk(src: string, slot: SlotKey, latex: LatexBlock[]): TextChunk {
+function textChunk(src: string, slot: SlotKey): TextChunk {
   const c = newChunk();
-  pushLine(c, parseInline(src, latex), slot, "NONE", 0);
+  pushLine(c, parseInline(src, []), slot, "NONE", 0);
   return c;
+}
+
+/** Split a cell into text and `$math$` pieces, in order. */
+function parseCell(src: string, slot: SlotKey): TableCell {
+  const parts: CellPart[] = [];
+  let textStart = 0;
+  const pushText = (end: number) => {
+    const piece = src.slice(textStart, end).trim();
+    if (piece) parts.push({ kind: "text", chunk: textChunk(piece, slot) });
+  };
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === "\\") { i++; continue; }
+    if (ch === "`") {
+      const close = src.indexOf("`", i + 1);
+      if (close !== -1) { i = close; continue; }
+    }
+    const close = inlineMathClose(src, i);
+    if (close !== -1) {
+      pushText(i);
+      const latex = src.slice(i + 1, close).trim();
+      if (latex) parts.push({ kind: "math", latex });
+      textStart = close + 1;
+      i = close;
+    }
+  }
+  pushText(src.length);
+  if (parts.length === 0) parts.push({ kind: "text", chunk: textChunk("", slot) });
+  return { slot, parts };
 }
 
 function parseMarkdown(input: string): ParseResult {
@@ -525,16 +567,16 @@ function parseMarkdown(input: string): ParseResult {
         const l = c.startsWith(":"), r = c.endsWith(":");
         return l && r ? "CENTER" : r ? "MAX" : "MIN";
       });
-      const rows: TextChunk[][] = [header.map((c) => cellChunk(c, "tableHeader", latex))];
+      const rows: TableCell[][] = [header.map((c) => parseCell(c, "tableHeader"))];
       i += 2;
       while (i < lines.length && lines[i].trim().startsWith("|")) {
-        rows.push(splitTableRow(lines[i]).map((c) => cellChunk(c, "tableCell", latex)));
+        rows.push(splitTableRow(lines[i]).map((c) => parseCell(c, "tableCell")));
         i++;
       }
       i--;
       const cols = header.length;
       for (const row of rows) {
-        while (row.length < cols) row.push(cellChunk("", "tableCell", latex));
+        while (row.length < cols) row.push(parseCell("", "tableCell"));
         row.length = cols;
       }
       while (align.length < cols) align.push("MIN");
@@ -830,23 +872,108 @@ async function writeChunk(node: TextNode, chunk: TextChunk, ctx: Ctx) {
 // Tables
 // ============================================================================
 
+// ----- LaTeX rendered on request (used for math inside table cells) -----
+
+let nextLatexRequest = 1;
+const latexRequests = new Map<number, (svg: string | null) => void>();
+
+/** Ask the UI (MathJax) for an SVG and wait for it. Resolves null on error/timeout. */
+function renderLatexSvg(latex: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const requestId = nextLatexRequest++;
+    latexRequests.set(requestId, resolve);
+    figma.ui.postMessage({ type: "render-latex", requestId, latex, display: false });
+    setTimeout(() => {
+      if (latexRequests.delete(requestId)) resolve(null);
+    }, 20000);
+  });
+}
+
+/** Paint every glyph of an SVG node with the given text color. */
+function recolor(node: SceneNode, fills: Paint[]) {
+  if (!("findAll" in node)) return;
+  for (const n of (node as FrameNode).findAll(() => true)) {
+    if ("fills" in n && Array.isArray(n.fills) && n.fills.length > 0) (n as GeometryMixin).fills = fills;
+    if ("strokes" in n && n.strokes.length > 0) (n as GeometryMixin).strokes = fills;
+  }
+}
+
+async function mathNode(latex: string, fontSize: number, fills: Paint[] | undefined, ctx: Ctx): Promise<SceneNode | null> {
+  const svg = await renderLatexSvg(latex);
+  if (!svg) {
+    ctx.warnings.add("LaTeX error in table: " + latex.substring(0, 20));
+    return null;
+  }
+  const node = figma.createNodeFromSvg(svg);
+  node.name = "LaTeX: " + latex.substring(0, 40);
+  node.fills = [];
+  node.clipsContent = false;
+  // MathJax sizes the SVG in ex (we render with ex = em / 2), so scale it to the cell's font size
+  const exHeight = parseFloat((/height="([\d.]+)ex"/.exec(svg) || [])[1] || "");
+  if (exHeight > 0 && node.height > 0) node.rescale((exHeight * fontSize * 0.5) / node.height);
+  if (fills) recolor(node, fills);
+  return node;
+}
+
+/** Build what goes inside one table cell: a text layer, an equation, or a row of both. */
+async function cellContent(cell: TableCell, align: "MIN" | "CENTER" | "MAX", template: TextNode, ctx: Ctx): Promise<SceneNode> {
+  const makeText = async (chunk: TextChunk) => {
+    const t = template.clone();
+    t.textAutoResize = "WIDTH_AND_HEIGHT";
+    await writeChunk(t, chunk, ctx);
+    t.textAlignHorizontal = align === "MIN" ? "LEFT" : align === "MAX" ? "RIGHT" : "CENTER";
+    return t;
+  };
+
+  if (cell.parts.length === 1 && cell.parts[0].kind === "text") return makeText(cell.parts[0].chunk);
+
+  const eff = await computeEffective(cell.slot, new Set(), ctx);
+  const fontSize = eff.fontSize || (typeof template.fontSize === "number" ? template.fontSize : 16);
+
+  const nodes: SceneNode[] = [];
+  for (const part of cell.parts) {
+    if (part.kind === "text") {
+      nodes.push(await makeText(part.chunk));
+    } else {
+      const m = await mathNode(part.latex, fontSize, eff.fills, ctx);
+      if (m) nodes.push(m);
+      else {
+        // Fall back to showing the source so nothing silently disappears
+        const c = newChunk();
+        pushLine(c, { text: "$" + part.latex + "$", mods: [], links: [] }, cell.slot, "NONE", 0);
+        nodes.push(await makeText(c));
+      }
+    }
+  }
+  if (nodes.length === 1) return nodes[0];
+
+  const rowFrame = figma.createFrame();
+  rowFrame.name = "Cell content";
+  rowFrame.layoutMode = "HORIZONTAL";
+  rowFrame.primaryAxisSizingMode = "AUTO";
+  rowFrame.counterAxisSizingMode = "AUTO";
+  rowFrame.counterAxisAlignItems = "CENTER";
+  rowFrame.itemSpacing = Math.round(fontSize * 0.25);
+  rowFrame.fills = [];
+  rowFrame.clipsContent = false;
+  for (const n of nodes) rowFrame.appendChild(n);
+  return rowFrame;
+}
+
 async function buildTable(table: TableBlock, template: TextNode, ctx: Ctx): Promise<FrameNode> {
   const divider: SolidPaint = { type: "SOLID", color: hex(ctx.table.dividerColor || DEFAULT_TABLE.dividerColor) };
   const padX = ctx.table.cellPaddingX, padY = ctx.table.cellPaddingY;
   const cols = table.align.length;
 
-  // 1. Create all text nodes and measure column widths
-  const texts: TextNode[][] = [];
+  // 1. Create every cell's content (text and/or LaTeX) and measure column widths
+  const texts: SceneNode[][] = [];
   const widths: number[] = new Array(cols).fill(0);
   for (const row of table.rows) {
-    const rowTexts: TextNode[] = [];
+    const rowTexts: SceneNode[] = [];
     for (let c = 0; c < cols; c++) {
-      const t = template.clone();
-      t.textAutoResize = "WIDTH_AND_HEIGHT";
-      await writeChunk(t, row[c], ctx);
-      t.textAlignHorizontal = table.align[c] === "MIN" ? "LEFT" : table.align[c] === "MAX" ? "RIGHT" : "CENTER";
-      widths[c] = Math.max(widths[c], t.width);
-      rowTexts.push(t);
+      const content = await cellContent(row[c], table.align[c], template, ctx);
+      widths[c] = Math.max(widths[c], content.width);
+      rowTexts.push(content);
     }
     texts.push(rowTexts);
   }
@@ -1213,6 +1340,12 @@ function sendState() {
 figma.ui.onmessage = async (msg) => {
   switch (msg.type) {
     case "latex-svg": {
+      if (msg.requestId) {
+        const resolve = latexRequests.get(msg.requestId);
+        latexRequests.delete(msg.requestId);
+        if (resolve) resolve(msg.svg);
+        break;
+      }
       try {
         const node = figma.createNodeFromSvg(msg.svg);
         let svgNode: SceneNode = node;
@@ -1236,6 +1369,13 @@ figma.ui.onmessage = async (msg) => {
       break;
     }
     case "error": {
+      if (msg.requestId) {
+        const resolve = latexRequests.get(msg.requestId);
+        latexRequests.delete(msg.requestId);
+        if (resolve) resolve(null);
+        console.error("LaTeX rendering error:", msg.error, msg.latex);
+        break;
+      }
       console.error("LaTeX rendering error:", msg.error, msg.latex);
       figma.notify("❌ LaTeX error: " + String(msg.latex).substring(0, 20));
       pendingLatex--;

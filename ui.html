@@ -426,11 +426,12 @@
               x: msg.x,
               y: msg.y,
               parentId: msg.parentId,
+              requestId: msg.requestId,
               latex: msg.latex
             });
           } catch (error) {
             console.error("Error rendering LaTeX:", error);
-            post({ type: "error", error: error.toString(), latex: msg.latex });
+            post({ type: "error", error: error.toString(), latex: msg.latex, requestId: msg.requestId });
           }
         }
       };
