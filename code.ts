@@ -224,7 +224,18 @@ function loadFont(font: FontName): Promise<boolean> {
 interface Range { start: number; end: number; slot: SlotKey }
 interface Link { start: number; end: number; url: string }
 interface Para { start: number; end: number; list: "ORDERED" | "UNORDERED" | "NONE"; indent: number }
-interface LatexBlock { latex: string; display: boolean }
+/**
+ * A LaTeX equation that sits in the text. `pos` is a placeholder character
+ * (a non-breaking space) that is later stretched to the equation's width,
+ * and the rendered SVG is placed on top of it.
+ */
+interface MathMark { pos: number; latex: string; display: boolean }
+
+/** Placeholder character reserved in the text for each equation. */
+const MATH_PLACEHOLDER = " ";
+/** `$$…$$` blocks are swapped for `\uE000<n>\uE000` before line parsing. */
+const DISPLAY_SENTINEL = /^\uE000(\d+)\uE000/;
+let displayMath: string[] = [];
 
 /** A run of styled text that ends up in one Figma text node. */
 interface TextChunk {
@@ -233,6 +244,7 @@ interface TextChunk {
   mods: Range[];     // bold, italic, code, highlight (may overlap)
   links: Link[];
   paras: Para[];
+  math: MathMark[];
 }
 
 /** A table cell is a row of text and inline-math pieces, so `$\theta$` stays inside its cell. */
@@ -248,10 +260,9 @@ type OutputBlock = { kind: "text"; chunk: TextChunk } | { kind: "table"; table: 
 
 interface ParseResult {
   blocks: OutputBlock[];
-  latex: LatexBlock[];
 }
 
-interface Inline { text: string; mods: Range[]; links: Link[] }
+interface Inline { text: string; mods: Range[]; links: Link[]; math: MathMark[] }
 
 const isSpace = (ch: string | undefined) => ch === undefined || /\s/.test(ch);
 const isWordChar = (ch: string | undefined) => ch !== undefined && /[\p{L}\p{N}]/u.test(ch);
@@ -304,23 +315,42 @@ function inlineMathClose(src: string, i: number): number {
   return -1;
 }
 
-function parseInline(src: string, latexOut: LatexBlock[]): Inline {
+function parseInline(src: string): Inline {
   let text = "";
   const mods: Range[] = [];
   const links: Link[] = [];
+  const math: MathMark[] = [];
 
   const appendNested = (inner: string, slots: SlotKey[]) => {
-    const sub = parseInline(inner, latexOut);
+    const sub = parseInline(inner);
     const offset = text.length;
     text += sub.text;
     for (const m of sub.mods) mods.push({ start: m.start + offset, end: m.end + offset, slot: m.slot });
     for (const l of sub.links) links.push({ start: l.start + offset, end: l.end + offset, url: l.url });
+    for (const m of sub.math) math.push({ pos: m.pos + offset, latex: m.latex, display: m.display });
     for (const slot of slots) mods.push({ start: offset, end: offset + sub.text.length, slot });
+  };
+
+  /** Reserve one placeholder character where the equation goes. */
+  const addMath = (latex: string) => {
+    if (!latex) return;
+    math.push({ pos: text.length, latex, display: false });
+    text += MATH_PLACEHOLDER;
   };
 
   let i = 0;
   while (i < src.length) {
     const ch = src[i];
+
+    // $$display$$ used inside a sentence -> treat like inline math
+    if (ch === "\uE000") {
+      const s = DISPLAY_SENTINEL.exec(src.slice(i));
+      if (s) {
+        addMath(displayMath[Number(s[1])] || "");
+        i += s[0].length;
+        continue;
+      }
+    }
 
     // Escapes: \* \$ \_ ...
     if (ch === "\\" && i + 1 < src.length && /[\\`*_{}[\]()#+\-.!|$=~]/.test(src[i + 1])) {
@@ -345,7 +375,7 @@ function parseInline(src: string, latexOut: LatexBlock[]): Inline {
     if (ch === "$") {
       const close = inlineMathClose(src, i);
       if (close !== -1) {
-        latexOut.push({ latex: src.slice(i + 1, close).trim(), display: false });
+        addMath(src.slice(i + 1, close).trim());
         i = close + 1;
         continue;
       }
@@ -430,7 +460,7 @@ function parseInline(src: string, latexOut: LatexBlock[]): Inline {
     text += ch;
     i++;
   }
-  return { text, mods, links };
+  return { text, mods, links, math };
 }
 
 const TABLE_SEPARATOR = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
@@ -454,7 +484,7 @@ function splitTableRow(line: string): string[] {
 }
 
 function newChunk(): TextChunk {
-  return { text: "", blocks: [], mods: [], links: [], paras: [] };
+  return { text: "", blocks: [], mods: [], links: [], paras: [], math: [] };
 }
 
 /** Append one line to a chunk with a block slot and optional list info. */
@@ -466,12 +496,13 @@ function pushLine(chunk: TextChunk, inline: Inline, slot: SlotKey, list: Para["l
   chunk.blocks.push({ start, end, slot });
   for (const m of inline.mods) chunk.mods.push({ start: m.start + start, end: m.end + start, slot: m.slot });
   for (const l of inline.links) chunk.links.push({ start: l.start + start, end: l.end + start, url: l.url });
+  for (const m of inline.math) chunk.math.push({ pos: m.pos + start, latex: m.latex, display: m.display });
   chunk.paras.push({ start, end, list, indent });
 }
 
 function textChunk(src: string, slot: SlotKey): TextChunk {
   const c = newChunk();
-  pushLine(c, parseInline(src, []), slot, "NONE", 0);
+  pushLine(c, parseInline(src), slot, "NONE", 0);
   return c;
 }
 
@@ -490,6 +521,17 @@ function parseCell(src: string, slot: SlotKey): TableCell {
       const close = src.indexOf("`", i + 1);
       if (close !== -1) { i = close; continue; }
     }
+    if (ch === "\uE000") {
+      const s = DISPLAY_SENTINEL.exec(src.slice(i));
+      if (s) {
+        pushText(i);
+        const latex = displayMath[Number(s[1])];
+        if (latex) parts.push({ kind: "math", latex });
+        textStart = i + s[0].length;
+        i = textStart - 1;
+        continue;
+      }
+    }
     const close = inlineMathClose(src, i);
     if (close !== -1) {
       pushText(i);
@@ -505,7 +547,7 @@ function parseCell(src: string, slot: SlotKey): TableCell {
 }
 
 function parseMarkdown(input: string): ParseResult {
-  const latex: LatexBlock[] = [];
+  displayMath = [];
   let src = input.replace(/\r\n?/g, "\n").replace(/[\u2028\u2029]/g, "\n");
 
   // YAML frontmatter -> title
@@ -520,10 +562,10 @@ function parseMarkdown(input: string): ParseResult {
   // %%obsidian comments%%
   src = src.replace(/%%[\s\S]*?%%/g, "");
 
-  // $$display math$$ (may span lines) — rendered as SVG below the text, like before
+  // $$display math$$ (may span lines) -> a sentinel; on its own line it becomes a centered equation
   src = src.replace(/\$\$([\s\S]+?)\$\$/g, (_m, body: string) => {
-    latex.push({ latex: body.trim(), display: true });
-    return "";
+    displayMath.push(body.trim().replace(/\s*\n\s*/g, " "));
+    return "\uE000" + (displayMath.length - 1) + "\uE000";
   });
 
   const lines = src.split("\n");
@@ -553,7 +595,7 @@ function parseMarkdown(input: string): ParseResult {
   };
 
   if (title) {
-    pushLine(chunk, parseInline(title, latex), "title", "NONE", 0);
+    pushLine(chunk, parseInline(title), "title", "NONE", 0);
     lastBlank = false;
   }
 
@@ -599,18 +641,28 @@ function parseMarkdown(input: string): ParseResult {
     // Horizontal rule / blank
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line) || line.trim() === "") {
       if (!lastBlank) {
-        pushLine(chunk, { text: "", mods: [], links: [] }, "body", "NONE", 0);
+        pushLine(chunk, { text: "", mods: [], links: [], math: [] }, "body", "NONE", 0);
         lastBlank = true;
       }
       continue;
     }
     lastBlank = false;
 
+    // $$display math$$ on its own line -> its own paragraph, centered later
+    const dm = DISPLAY_SENTINEL.exec(line.trim());
+    if (dm && dm[0].length === line.trim().length) {
+      const latex = displayMath[Number(dm[1])] || "";
+      if (latex) {
+        pushLine(chunk, { text: MATH_PLACEHOLDER, mods: [], links: [], math: [{ pos: 0, latex, display: true }] }, "body", "NONE", 0);
+      }
+      continue;
+    }
+
     // Headings
-    const h = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/.exec(line);
+    const h =/^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/.exec(line);
     if (h) {
       const level = Math.min(h[1].length, 4);
-      pushLine(chunk, parseInline(h[2], latex), ("h" + level) as SlotKey, "NONE", 0);
+      pushLine(chunk, parseInline(h[2]), ("h" + level) as SlotKey, "NONE", 0);
       continue;
     }
 
@@ -625,16 +677,16 @@ function parseMarkdown(input: string): ParseResult {
       const task = /^\[( |x|X)\]\s+(.*)$/.exec(content);
       if (task) content = (task[1] === " " ? "☐ " : "☑ ") + task[2];
       const ordered = /\d/.test(li[2]);
-      pushLine(chunk, parseInline(content, latex), "body", ordered ? "ORDERED" : "UNORDERED", level);
+      pushLine(chunk, parseInline(content), "body", ordered ? "ORDERED" : "UNORDERED", level);
       continue;
     }
 
-    const inline = parseInline(line.trim(), latex);
+    const inline = parseInline(line.trim());
     if (quoteSlot) inline.mods.push({ start: 0, end: inline.text.length, slot: quoteSlot });
     pushLine(chunk, inline, "body", "NONE", 0);
   }
   flush();
-  return { blocks, latex };
+  return { blocks };
 }
 
 // ============================================================================
@@ -878,11 +930,11 @@ let nextLatexRequest = 1;
 const latexRequests = new Map<number, (svg: string | null) => void>();
 
 /** Ask the UI (MathJax) for an SVG and wait for it. Resolves null on error/timeout. */
-function renderLatexSvg(latex: string): Promise<string | null> {
+function renderLatexSvg(latex: string, display = false): Promise<string | null> {
   return new Promise((resolve) => {
     const requestId = nextLatexRequest++;
     latexRequests.set(requestId, resolve);
-    figma.ui.postMessage({ type: "render-latex", requestId, latex, display: false });
+    figma.ui.postMessage({ type: "render-latex", requestId, latex, display });
     setTimeout(() => {
       if (latexRequests.delete(requestId)) resolve(null);
     }, 20000);
@@ -898,21 +950,191 @@ function recolor(node: SceneNode, fills: Paint[]) {
   }
 }
 
-async function mathNode(latex: string, fontSize: number, fills: Paint[] | undefined, ctx: Ctx): Promise<SceneNode | null> {
-  const svg = await renderLatexSvg(latex);
+/** A rendered equation, scaled to a font size. `depth` = how far it hangs below the baseline (px). */
+interface RenderedMath { node: FrameNode; depth: number }
+
+async function renderMath(latex: string, fontSize: number, fills: Paint[] | undefined, display: boolean, ctx: Ctx): Promise<RenderedMath | null> {
+  const svg = await renderLatexSvg(latex, display);
   if (!svg) {
-    ctx.warnings.add("LaTeX error in table: " + latex.substring(0, 20));
+    ctx.warnings.add("LaTeX error: " + latex.substring(0, 20));
     return null;
   }
   const node = figma.createNodeFromSvg(svg);
   node.name = "LaTeX: " + latex.substring(0, 40);
   node.fills = [];
   node.clipsContent = false;
-  // MathJax sizes the SVG in ex (we render with ex = em / 2), so scale it to the cell's font size
+  // MathJax sizes the SVG in ex (we render with ex = em / 2), so scale it to the text's font size
+  const exPx = fontSize * 0.5;
   const exHeight = parseFloat((/height="([\d.]+)ex"/.exec(svg) || [])[1] || "");
-  if (exHeight > 0 && node.height > 0) node.rescale((exHeight * fontSize * 0.5) / node.height);
+  if (exHeight > 0 && node.height > 0) node.rescale((exHeight * exPx) / node.height);
+  const valign = parseFloat((/vertical-align:\s*(-?[\d.]+)ex/.exec(svg) || [])[1] || "0");
   if (fills) recolor(node, fills);
-  return node;
+  return { node, depth: Math.max(0, -valign * exPx) };
+}
+
+async function mathNode(latex: string, fontSize: number, fills: Paint[] | undefined, ctx: Ctx): Promise<SceneNode | null> {
+  const r = await renderMath(latex, fontSize, fills, false, ctx);
+  return r ? r.node : null;
+}
+
+// ----- Placing equations inside a text layer -----
+// Figma can't tell us where a character is drawn, so we measure: temporary
+// copies of the text layer, cut down to a prefix or a single line, give the
+// line an equation falls on and how far along it sits.
+
+function numberOr(v: number | PluginAPI["mixed"], fallback: number): number {
+  return typeof v === "number" ? v : fallback;
+}
+
+/** Size of a temporary copy of `node` holding only characters [start, end). */
+function measureRange(node: TextNode, start: number, end: number, oneLine: boolean): { w: number; h: number } {
+  const c = node.clone();
+  figma.currentPage.appendChild(c);
+  const len = c.characters.length;
+  if (end < len) c.deleteCharacters(end, len);
+  if (start > 0) c.deleteCharacters(0, start);
+  c.textAutoResize = oneLine || node.textAutoResize === "WIDTH_AND_HEIGHT" ? "WIDTH_AND_HEIGHT" : "HEIGHT";
+  const r = { w: c.width, h: c.height };
+  c.remove();
+  return r;
+}
+
+/** Width of one placeholder character in the style it has at `pos`, without letter spacing. */
+async function placeholderWidth(node: TextNode, pos: number): Promise<number> {
+  const t = figma.createText();
+  const font = node.getRangeFontName(pos, pos + 1);
+  if (font !== figma.mixed) {
+    await loadFont(font);
+    t.fontName = font;
+  } else {
+    await loadFont(t.fontName as FontName);
+  }
+  t.fontSize = numberOr(node.getRangeFontSize(pos, pos + 1), 16);
+  t.characters = MATH_PLACEHOLDER;
+  const w = t.width;
+  t.remove();
+  return w;
+}
+
+function lineHeightPx(node: TextNode, pos: number, fontSize: number): number {
+  const lh = node.getRangeLineHeight(pos, pos + 1);
+  if (lh === figma.mixed || lh.unit === "AUTO") return fontSize * 1.2;
+  return lh.unit === "PIXELS" ? lh.value : (lh.value / 100) * fontSize;
+}
+
+/** Where the line holding character `pos` starts (index), its top (px) and height (px). */
+function locateLine(node: TextNode, pos: number): { lineStart: number; top: number; height: number } {
+  const text = node.characters;
+  const paraStart = text.lastIndexOf("\n", pos - 1) + 1;
+  const prefixH = (k: number) => measureRange(node, 0, k, false).h;
+  const full = prefixH(pos + 1);
+
+  let lineStart = paraStart;
+  if (node.textAutoResize !== "WIDTH_AND_HEIGHT" && pos > paraStart && prefixH(paraStart + 1) < full - 0.5) {
+    // Smallest prefix that already reaches the last line; that character's word starts the line
+    let lo = paraStart + 1, hi = pos + 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (prefixH(mid) >= full - 0.5) hi = mid;
+      else lo = mid + 1;
+    }
+    lineStart = lo - 1;
+    while (lineStart > paraStart && !/[ \t\n]/.test(text[lineStart - 1])) lineStart--;
+  }
+  const height = measureRange(node, lineStart, pos + 1, true).h;
+  return { lineStart, top: full - height, height };
+}
+
+/**
+ * Render every equation of `chunk`, stretch its placeholder to the equation's
+ * width (or, for $$…$$, make its line as tall as the equation), then put the
+ * SVG exactly over the placeholder. Returns the SVG layers (already in the
+ * text's parent, positioned).
+ */
+async function placeMath(node: TextNode, chunk: TextChunk, ctx: Ctx): Promise<SceneNode[]> {
+  if (chunk.math.length === 0) return [];
+  const marks = chunk.math.map((m) => ({ pos: m.pos, latex: m.latex, display: m.display }));
+
+  // 1. Render, at the size and color of the text around each equation
+  const rendered: (RenderedMath | null)[] = [];
+  for (const m of marks) {
+    const fontSize = numberOr(node.getRangeFontSize(m.pos, m.pos + 1), 16);
+    const fills = node.getRangeFills(m.pos, m.pos + 1);
+    const paints = fills !== figma.mixed && fills.length ? (fills as Paint[]) : undefined;
+    rendered.push(await renderMath(m.latex, fontSize, paints, m.display, ctx));
+  }
+
+  // 2. Equations that failed: show their source instead (last first, so earlier positions stay valid)
+  for (let i = marks.length - 1; i >= 0; i--) {
+    if (rendered[i]) continue;
+    const source = marks[i].display ? "$$" + marks[i].latex + "$$" : "$" + marks[i].latex + "$";
+    node.insertCharacters(marks[i].pos + 1, source, "BEFORE");
+    node.deleteCharacters(marks[i].pos, marks[i].pos + 1);
+    for (let j = i + 1; j < marks.length; j++) marks[j].pos += source.length - 1;
+  }
+
+  // 3. Make room: inline = placeholder as wide as the equation; display = a line as tall as it
+  const gap = 2;
+  for (let i = 0; i < marks.length; i++) {
+    const r = rendered[i];
+    if (!r) continue;
+    const pos = marks[i].pos;
+    const fontSize = numberOr(node.getRangeFontSize(pos, pos + 1), 16);
+    if (marks[i].display) {
+      node.setRangeLineHeight(pos, pos + 1, { unit: "PIXELS", value: Math.ceil(r.node.height + fontSize * 0.9) });
+    } else {
+      const ws = await placeholderWidth(node, pos);
+      node.setRangeLetterSpacing(pos, pos + 1, { unit: "PIXELS", value: r.node.width + gap * 2 - ws });
+      // Tall equations (fractions, sums) get a taller line so they don't overlap the next one
+      if (r.node.height > lineHeightPx(node, pos, fontSize)) {
+        node.setRangeLineHeight(pos, pos + 1, { unit: "PIXELS", value: Math.ceil(r.node.height + fontSize * 0.3) });
+      }
+    }
+  }
+
+  // 4. Measure where each placeholder ended up and put the SVG there
+  if (node.textAlignHorizontal !== "LEFT" && marks.some((m) => !m.display)) {
+    ctx.warnings.add("Inline LaTeX positions assume left-aligned text");
+  }
+  const parent = node.parent as BaseNode & ChildrenMixin;
+  const inAutoLayout = "layoutMode" in parent && (parent as FrameNode).layoutMode !== "NONE";
+  const placed: SceneNode[] = [];
+  for (let i = 0; i < marks.length; i++) {
+    const r = rendered[i];
+    if (!r) continue;
+    const pos = marks[i].pos;
+    const fontSize = numberOr(node.getRangeFontSize(pos, pos + 1), 16);
+    const line = locateLine(node, pos);
+    let x: number, y: number;
+    if (marks[i].display) {
+      x = Math.max(0, (node.width - r.node.width) / 2);
+      y = line.top + (line.height - r.node.height) / 2;
+    } else {
+      const before = pos > line.lineStart
+        ? measureRange(node, line.lineStart, pos, true).w
+        : measureRange(node, line.lineStart, pos + 1, true).w - (r.node.width + gap * 2);
+      x = before + gap;
+      // Sit on the baseline: glyphs are centered in the line box, baseline ≈ centre + 0.35em
+      const baseline = line.top + line.height / 2 + fontSize * 0.35;
+      y = baseline - (r.node.height - r.depth);
+    }
+    parent.appendChild(r.node);
+    if (inAutoLayout) r.node.layoutPositioning = "ABSOLUTE";
+    r.node.x = node.x + x;
+    r.node.y = node.y + y;
+    placed.push(r.node);
+  }
+  return placed;
+}
+
+/** Keep the text and its equations together, so moving one moves the other. */
+function groupWithMath(node: TextNode, svgs: SceneNode[]): SceneNode {
+  if (svgs.length === 0) return node;
+  const parent = node.parent as BaseNode & ChildrenMixin;
+  const index = parent.children.indexOf(node);
+  const group = figma.group([node, ...svgs], parent, index);
+  group.name = (node.characters.split("\n")[0].split(MATH_PLACEHOLDER).join("").replace(/\s+/g, " ").trim() || "Text").substring(0, 40) + " + LaTeX";
+  return group;
 }
 
 /** Build what goes inside one table cell: a text layer, an equation, or a row of both. */
@@ -940,7 +1162,7 @@ async function cellContent(cell: TableCell, align: "MIN" | "CENTER" | "MAX", tem
       else {
         // Fall back to showing the source so nothing silently disappears
         const c = newChunk();
-        pushLine(c, { text: "$" + part.latex + "$", mods: [], links: [] }, cell.slot, "NONE", 0);
+        pushLine(c, { text: "$" + part.latex + "$", mods: [], links: [], math: [] }, cell.slot, "NONE", 0);
         nodes.push(await makeText(c));
       }
     }
@@ -1108,7 +1330,7 @@ function adoptIntoFrame(node: TextNode): Container | null {
   return frame;
 }
 
-async function formatNode(node: TextNode, settings: Settings): Promise<{ latex: number; warnings: Set<string>; movedInto: string | null }> {
+async function formatNode(node: TextNode, settings: Settings): Promise<{ math: number; warnings: Set<string>; movedInto: string | null }> {
   const adopted = adoptIntoFrame(node);
   const parsed = parseMarkdown(node.characters);
   const ctx: Ctx = {
@@ -1124,11 +1346,14 @@ async function formatNode(node: TextNode, settings: Settings): Promise<{ latex: 
   await loadAllFontsOf(node);
 
   const hasTable = parsed.blocks.some((b) => b.kind === "table");
-  let result: SceneNode = node;
+  // Text layers whose equations get placed once every layer is laid out
+  const written: { node: TextNode; chunk: TextChunk }[] = [];
 
   if (!hasTable) {
     const first = parsed.blocks[0];
-    await writeChunk(node, first && first.kind === "text" ? first.chunk : newChunk(), ctx);
+    const chunk = first && first.kind === "text" ? first.chunk : newChunk();
+    await writeChunk(node, chunk, ctx);
+    written.push({ node, chunk });
   } else {
     const parent: BaseNode & ChildrenMixin = node.parent || figma.currentPage;
     const index = parent.children.indexOf(node);
@@ -1159,32 +1384,24 @@ async function formatNode(node: TextNode, settings: Settings): Promise<{ latex: 
           t.textAutoResize = "HEIGHT";
         }
         await writeChunk(t, block.chunk, ctx);
+        written.push({ node: t, chunk: block.chunk });
       } else {
         wrapper.appendChild(await buildTable(block.table, template, ctx));
       }
     }
     template.remove();
     node.remove();
-    result = wrapper;
   }
 
-  // LaTeX: render via the UI (MathJax), placed below the result
-  let offsetY = result.y + result.height + 16;
-  const parentId = result.parent ? result.parent.id : null;
-  for (const block of parsed.latex) {
-    if (!block.latex) continue;
-    pendingLatex++;
-    figma.ui.postMessage({
-      type: "render-latex",
-      latex: block.latex,
-      x: result.x,
-      y: offsetY,
-      display: block.display,
-      parentId,
-    });
-    offsetY += block.display ? 80 : 40;
+  // LaTeX: render each equation and put it where it was written in the text
+  let math = 0;
+  for (const w of written) {
+    if (w.chunk.math.length === 0) continue;
+    const svgs = await placeMath(w.node, w.chunk, ctx);
+    groupWithMath(w.node, svgs);
+    math += svgs.length;
   }
-  return { latex: parsed.latex.length, warnings: ctx.warnings, movedInto: adopted ? adopted.name : null };
+  return { math, warnings: ctx.warnings, movedInto: adopted ? adopted.name : null };
 }
 
 async function formatSelection() {
@@ -1196,12 +1413,13 @@ async function formatSelection() {
   }
   const settings = loadSaved();
   const warnings = new Set<string>();
-  let latex = 0;
+  let math = 0;
   const movedInto = new Set<string>();
+  if (closeWhenDone) figma.notify("⏳ Formatting…", { timeout: 2000 });
   for (const node of textNodes) {
     try {
       const r = await formatNode(node, settings);
-      latex += r.latex;
+      math += r.math;
       r.warnings.forEach((w) => warnings.add(w));
       if (r.movedInto) movedInto.add(r.movedInto);
     } catch (e) {
@@ -1211,8 +1429,8 @@ async function formatSelection() {
   }
   if (movedInto.size) figma.notify(`📄 Moved text into frame "${[...movedInto].join('", "')}"`);
   if (warnings.size) figma.notify("⚠️ " + [...warnings].slice(0, 3).join(" · "), { timeout: 6000 });
-  if (latex === 0) figma.notify("✅ Markdown formatting applied");
-  else figma.notify(`⏳ Rendering ${latex} LaTeX block${latex > 1 ? "s" : ""}…`);
+  if (math === 0) figma.notify("✅ Markdown formatting applied");
+  else figma.notify(`✅ Formatted, with ${math} equation${math > 1 ? "s" : ""} placed in the text`);
   maybeClose();
 }
 

@@ -44,7 +44,7 @@ Styles are saved **inside each Figma file**. Use **Export JSON** (copy or downlo
 - Tables → auto-layout frame (header divider, column dividers, `:--:` / `--:` alignment). `$math$` inside a cell is rendered in that cell, sized and colored to match its text.
 - `[[wikilink|alias]]` → alias, `[label](url)` → hyperlink, `![[embeds]]` and `%%comments%%` removed
 - Callouts `> [!note] Title` → bold title, quote markers removed
-- `$inline$` and `$$display$$` LaTeX in normal text → SVG equations placed below the text (Figma can't put an image inside a text layer). `$10 and $20` stays as text.
+- `$inline$` LaTeX is placed **in the line where you wrote it**: the text leaves a gap exactly as wide as the equation, and the equation sits on the baseline at the text's size and color. `$$display$$` on its own line gets its own centered line. Text and equations are grouped, so they move together. `$10 and $20` stays as text. (Positions assume left-aligned text.)
 
 Highlight note: Figma can't paint a background behind part of a text layer, so `==text==` uses the Highlight slot's text styling (color, underline, weight…).
 
